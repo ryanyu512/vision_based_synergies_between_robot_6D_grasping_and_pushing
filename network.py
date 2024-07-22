@@ -21,13 +21,30 @@ class Encoder(nn.Module):
         self.depth_encoder = torchvision.models.densenet.densenet121(pretrained=True)
         self.color_encoder = torchvision.models.densenet.densenet121(pretrained=True)
 
+        #freeze the pretrained layers
+        for param in self.depth_encoder.parameters():
+            param.requires_grad = False
+
+        for param in self.color_encoder.parameters():
+            param.requires_grad = False
+
         self.to(self.device)
 
     def forward(self, color_img, depth_img):
+        
+        #move input to correct device
+        color_img = color_img.to(self.device)
+        depth_img = depth_img.to(self.device)
 
+        #get 2d feature vector (batch, 1024, 7, 7)
         depth_feat = self.depth_encoder.features(depth_img)
         color_feat = self.color_encoder.features(color_img)
 
+        #reduce to 1d feature vector (batch, 1024)
+        depth_feat = nn.functional.adaptive_avg_pool2d(depth_feat, (1, 1)).view(depth_feat.size(0), -1)
+        color_feat = nn.functional.adaptive_avg_pool2d(color_feat, (1, 1)).view(color_feat.size(0), -1)
+
+        #combine depth and color feature
         feat = torch.cat((depth_feat, color_feat), dim = 1)
 
         return feat
@@ -50,38 +67,34 @@ class Critic(nn.Module):
         #initialise inference device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')        
 
-        #initialise network dimensions
-        self.input_dims = input_dims
-        self.FCL_dims   = FCL_dims
-        
-        #initialise action dimension
-        self.N_action      = N_action
-        self.N_action_type = N_action_type
-
-        #initialise output dimention
-        self.N_out = N_output
-
         #initialise network layers
         self.fc = nn.Sequential(
-            nn.Linear(self.input_dims[0] + N_action_type + N_action, self.FCL_dims[0]),
+            nn.Linear(input_dims[0] + N_action_type + N_action, FCL_dims[0]),
             nn.ReLU(),
-            nn.Linear(self.FCL_dims[0], self.FCL_dims[1]),
+            nn.Linear(FCL_dims[0], FCL_dims[1]),
             nn.ReLU()
         )
 
-        self.Q_value      = nn.Linear(self.FCL_dims[1], self.N_out)
+        self.Q_value      = nn.Linear(FCL_dims[1], N_output)
 
         #initialise checkpoint directory
         self.checkpt_dir  = checkpt_dir
+        #check if dir exists 
+        if not os.path.exists(self.checkpt_dir):
+            os.makedirs(self.checkpt_dir)
         self.checkpt_file = os.path.abspath(os.path.join(self.checkpt_dir, name+ '_sac'))
 
         #initialise optimiser
-        self.lr = lr
-        self.optimiser = optim.Adam(self.parameters(), lr = self.lr)
+        self.optimiser = optim.Adam(self.parameters(), lr = lr)
 
         self.to(self.device)
 
-    def foward(self, state, action, action_type):
+    def forward(self, state, action, action_type):
+
+        #move to correct device
+        state       = state.to(self.device)
+        action      = action.to(self.device)
+        action_type = action_type.to(self.device)
 
         #concat all inputs 
         x = torch.cat([state, action, action_type], dim = 1)
@@ -115,10 +128,6 @@ class Actor(nn.Module):
 
         #initialise inference device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')        
-
-        #initialise network dimensions
-        self.input_dims = input_dims
-        self.FCL_dims   = FCL_dims
         
         #initialise action dimention
         self.N_action = N_action
@@ -126,26 +135,28 @@ class Actor(nn.Module):
 
         #initialise network layers
         self.fc = nn.Sequential(
-            nn.Linear(*self.input_dims, self.FCL_dims[0]),
+            nn.Linear(input_dims[0], FCL_dims[0]),
             nn.ReLU(),
-            nn.Linear(self.FCL_dims[0], self.FCL_dims[1]),
+            nn.Linear(FCL_dims[0], FCL_dims[1]),
             nn.ReLU()
         )
 
-        self.mean        = nn.Linear(self.FCL_dims[1], self.N_action)
-        self.std         = nn.Linear(self.FCL_dims[1], self.N_action)
-        self.action_type = nn.Linear(self.FCL_dims[1], self.N_action_type)
+        self.mean        = nn.Linear(FCL_dims[1], N_action)
+        self.std         = nn.Linear(FCL_dims[1], N_action)
+        self.action_type = nn.Linear(FCL_dims[1], N_action_type)
 
         #initialise max action range
-        self.max_action = max_action
+        self.max_action = torch.tensor(max_action).to(self.device)
 
         #initialise checkpoint directory
         self.checkpt_dir  = checkpt_dir
+        #check if dir exists 
+        if not os.path.exists(self.checkpt_dir):
+            os.makedirs(self.checkpt_dir)
         self.checkpt_file = os.path.abspath(os.path.join(self.checkpt_dir, name+ '_sac'))
 
         #initialise optimiser
-        self.lr = lr
-        self.optimiser = optim.Adam(self.parameters(), lr = self.lr)
+        self.optimiser = optim.Adam(self.parameters(), lr = lr)
 
         #used for preventing 0 value
         self.sm_c = 1e-6                 
@@ -153,6 +164,9 @@ class Actor(nn.Module):
         self.to(self.device)
 
     def forward(self, state):
+
+        #move to correct device
+        state = state.to(self.device)
 
         x = self.fc(state)
 
@@ -168,7 +182,7 @@ class Actor(nn.Module):
                           max = 1.)
         
         #compute action type
-        action_type_probs = torch.softmax(self.action_type(x))
+        action_type_probs = torch.softmax(self.action_type(x), dim=-1)
 
         return mean, std, action_type_probs
 
@@ -185,7 +199,7 @@ class Actor(nn.Module):
         else:
             z = normal.sample()
 
-        actions     = torch.tanh(z)*torch.tensor(self.max_action).to(self.dvice)
+        actions     = torch.tanh(z)*self.max_action
         action_type = Categorical(action_type_probs).sample()
 
         return actions, action_type, normal, action_type_probs

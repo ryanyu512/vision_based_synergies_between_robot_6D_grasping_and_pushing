@@ -168,22 +168,41 @@ class Agent():
 
     def interact(self, 
                  is_train = True, 
-                 max_episode = 1000):
+                 max_episode = 1,
+                 is_debug = True):
         
         #start trainiing/evaluation loop
         for episode in range(max_episode) if is_train else 1:
 
             while True:
 
+                #get raw data
+                color_img, depth_img = self.env.get_rgbd_data()
+
+                #preprocess raw data
+                in_color_img, in_depth_img = self.preprocess_input(color_img = color_img, depth_img = depth_img)
+
+                in_color_img = in_color_img.unsqueeze(0)
+                in_depth_img = in_depth_img.unsqueeze(0)
+
                 #get state
+                state = self.encoder(color_img = in_color_img, depth_img = in_depth_img)
+                print(f"state.shape: {state.shape}") if is_debug else None
 
                 #action selection
+                actions, action_type, normal, action_type_probs = self.actor.get_actions(state)
+                print(f"action_type: {action_type}, action_type_probs: {action_type_probs}, actions: {actions}") if is_debug else None
+
+                #step
+                # self.env.
 
                 #store experience 
 
+
                 #update parameter
 
-                #check if all the 
+                #check if terminate this episode
+                break
 
             
 
