@@ -95,8 +95,16 @@ class Env():
 
         #define obj directory
         self.obj_dir = os.path.abspath(obj_dir)
+
         #define objects in the scene
         self.N_pickable_obj = self.N_obj   = N_obj
+
+        #create 5-point at gripper tip for collision checking
+        self.gripper_tip_box = np.array([[-0.0175,       0, -0.025], 
+                                         [ 0.0175,       0, -0.025],
+                                         [      0,  0.0125, -0.025],
+                                         [      0, -0.0125, -0.025],
+                                         [      0,       0, -0.025]]).T
 
         #reset
         self.reset_success = True
@@ -953,7 +961,7 @@ class Env():
 
         return bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items
 
-    def get_closest_item(self, item_ind = None):
+    def get_closest_item_rel2gripper(self):
 
         #get item poses
         item_poses = self.update_item_pose()
@@ -963,20 +971,17 @@ class Env():
                                                              self.sim.handle_world)
 
         #get closest item index
-        if item_ind is None:
-            min_norm     = np.inf
-            min_delta    = None
+        min_norm     = np.inf
+        min_delta    = None
 
-            for i in range(len(item_poses)):
-                delta_vector      = np.array(item_poses[i][0:3]) - np.array(gripper_tip_pos)
-                delta_vector_norm = np.linalg.norm(delta_vector)
+        for i in range(len(item_poses)):
+            delta_vector      = np.array(item_poses[i][0:3]) - np.array(gripper_tip_pos)
+            delta_vector_norm = np.linalg.norm(delta_vector)
 
-                if min_norm > delta_vector_norm:
-                    min_norm   = delta_vector_norm
-                    item_ind = i
-                    min_delta = delta_vector
-        else:
-             min_delta = np.array(item_poses[item_ind][0:3]) - np.array(gripper_tip_pos)
+            if min_norm > delta_vector_norm:
+                min_norm   = delta_vector_norm
+                item_ind = i
+                min_delta = delta_vector
 
         item_pos = item_poses[item_ind][0:3]
 
@@ -1013,94 +1018,88 @@ class Env():
 
         return sorted_item_ind, sorted_items_pose[:,0:3], gripper_tip_pos, sorted_delta_vecs
 
-    def get_closest_item_neighbour(self, item_ind):
-
-        #get all items bounding boxes
-        bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items = self.compute_item_bboxes()
+    def get_closest_item_neighbour(self, 
+                                   target_ind, 
+                                   bbox_items,
+                                   face_centers_items):
 
         #get all item poses
         item_poses   = self.update_item_pose()
 
-        #get closest neighbour item
-        target_pose   = item_poses[item_ind]
-        min_d         = np.inf
+        #get closest neighbour item based on center distance
+        target_pose              = item_poses[target_ind]
+        min_center_distance      = np.inf
         neighbour_ind = None
 
         for i, item_pose in enumerate(item_poses):
 
-            if i == item_ind or self.item_data_dict['picked'][i]:
+            if i == target_ind or self.item_data_dict['picked'][i]:
                 continue
 
-            d = np.linalg.norm(np.array(item_pose[0:3]) - np.array(target_pose[0:3]))
-            if min_d > d:
-                min_d = d
+            distance = np.linalg.norm(np.array(item_pose[0:3]) - np.array(target_pose[0:3]))
+            if min_center_distance > distance:
+                min_center_distance = distance
                 neighbour_ind = i
 
-        #find which bounding points are the closest
-        target_bbox_pts    = np.vstack((bbox_items[item_ind], face_centers_items[item_ind]))
-        target_bbox_size   = size_items[item_ind]
-        target_R           = Ro2w_items[item_ind]
-        target_center      = center_items[item_ind]
+        #get the target bounding box points + face centers
+        target_pts    = np.vstack((bbox_items[target_ind], face_centers_items[target_ind]))
 
-        #get neighbour normals and centers
-        neighbour_bbox_pts     = np.vstack((bbox_items[neighbour_ind], face_centers_items[neighbour_ind]))
+        #get the neighbour bounding box points + face centers
+        neighbour_pts = np.vstack((bbox_items[neighbour_ind], face_centers_items[neighbour_ind]))
+
+        #compute cloest points between the target and its closest neighbour
+        min_distance      = np.inf
+        neighbour_corner  = None
+        target_corner     = None
+
+        for target_pt in target_pts:
+            for neighbour_pt in neighbour_pts:
+
+                    distance = np.linalg.norm(target_pt - neighbour_pt)
+
+                    if min_distance > distance:
+                        min_distance     = distance
+                        target_corner    = copy.copy(target_pt)
+                        neighbour_corner = copy.copy(neighbour_pt)
+
+        return item_poses[neighbour_ind][0:3], neighbour_ind, target_corner, neighbour_corner, min_distance
+
+    def compute_push_path(self, 
+                          center_items,
+                          size_items, 
+                          Ro2w_items,
+                          target_ind, 
+                          neighbour_ind, 
+                          target_pt, 
+                          neighbour_pt, 
+                          offset_z = 0.025):
+
+        #get all item poses
+        item_poses   = self.update_item_pose()
+
+        #get target box size, target orientation (from object frame to world frame) and target box center (relative to world frame)
+        target_bbox_size   = size_items[target_ind]
+        target_R           = Ro2w_items[target_ind]
+        target_center      = center_items[target_ind]
+
+        #get neighbour box size, orientation (from object frame to world frame) and neighbour box center (relative to world frame)
         neighbour_bbox_size    = size_items[neighbour_ind]
-        neighbour_normals      = face_normals_items[neighbour_ind]
-        neighbour_face_centers = face_centers_items[neighbour_ind]
         neighbour_R            = Ro2w_items[neighbour_ind]
         neighbour_center       = center_items[neighbour_ind]
 
-        min_d    = np.inf
-        min_pt_plane_dist = np.inf
-        min_pair = None
-        neighbour_pt   = None
-        target_pt      = None
+        #compute the pushing point that can help singulate the target item 
+        push_point   = (np.array(neighbour_pt[0:2]) + np.array(target_pt[0:2]))/2.
+        push_point_z = (item_poses[neighbour_ind][2] + item_poses[target_ind][2])/2.
+        push_point   = np.array([push_point[0], 
+                                 push_point[1], 
+                                 push_point_z + offset_z]) #offset the z coordinate to avoid gripper tip in collision with the object 
 
-        #TODO [FINISH]: make a five point detection
-
-        for i, t_bbox_pt in enumerate(target_bbox_pts):
-
-            for j, n_bbox_pt in enumerate(neighbour_bbox_pts):
-                    
-                    # if np.argmax(n) == 2:
-                    #     continue
-
-                    #compute distance between points
-                    d = np.linalg.norm(t_bbox_pt - n_bbox_pt)
-
-                    if min_d > d:
-                        min_d = d
-
-                        target_pt    = copy.copy(t_bbox_pt)
-                        neighbour_pt = copy.copy(n_bbox_pt)
-        
-                        # pt1 = np.dot( n, pt_plane_dist) + t_bbox_pt
-                        # pt2 = np.dot(-n, pt_plane_dist) + t_bbox_pt
-
-                        # v1  = np.dot(n, pt1 - neighbour_face_centers[j])
-                        # v2  = np.dot(n, pt2 - neighbour_face_centers[j])
-
-                        # if abs(v1) < abs(v2):
-                        #     neighbour_pt = pt1
-                        # else:
-                        #     neighbour_pt = pt2
-
-        #compute the point on the neighbour plane
-        #get the difference vector between bbox pt on the face - bbox pt on the target item
-
-        #get the push point
-        push_point = (np.array(neighbour_pt[0:2]) + np.array(target_pt[0:2]))/2.
-        push_point_z = (item_poses[neighbour_ind][2] + item_poses[item_ind][2])/2.
-        push_point = np.array([push_point[0], 
-                               push_point[1], 
-                               push_point_z + 0.025])
-
-        #get the point just right before pushing
+        #compute a list of orientation candidate
         ang_list = np.linspace(0, 2*np.pi, 36, endpoint = True)
         be4_push_point = None
 
-        p_list     = []
-        p_path_cnt = []
+        push_start_pt_list = []
+        push_path_collision_free_counter = []
 
         for i, ang, in enumerate(ang_list): 
 
@@ -1113,27 +1112,22 @@ class Env():
             p  = np.matmul(R, np.array([0.03, 0, 0])) + push_point
 
             #deep copy to ensure correct storage
-            p_list.append(copy.copy(p))
-
-            #create 2d box at gripper tip for collision checking
-            gripper_tip_box = np.array([[-0.0175,       0, -0.025], 
-                                        [ 0.0175,       0, -0.025],
-                                        [      0,  0.0125, -0.025],
-                                        [      0, -0.0125, -0.025],
-                                        [      0,       0, -0.025]]).T
+            push_start_pt_list.append(copy.copy(p))
             
-            #compute the gripper 2d box for collision checking
+            #create 5 - point check for collision check
+            gripper_tip_box = copy.copy(self.gripper_tip_box)
+
             gripper_tip_box = np.matmul(R, gripper_tip_box).T + p
 
             #ensure the starting point of pushing is not in collision with other items
             is_collision_at_start_pt = False
 
-            for j in range(len(bbox_items)):
+            for j in range(len(center_items)):
                 is_collision_at_start_pt = self.is_within_bbox(gripper_tip_box, center_items[j], size_items[j], Ro2w_items[j])
                 if is_collision_at_start_pt:
                     break
 
-            cnt = 0
+            collision_free_counter = 0
             if not is_collision_at_start_pt:
                 
                 #generate trajectory points for collision checking
@@ -1155,27 +1149,27 @@ class Env():
                         self.is_within_bbox(gripper_tip_box, neighbour_center, neighbour_bbox_size, neighbour_R)):
                             break
                     
-                    cnt += 1
+                    collision_free_counter += 1
                 
                 #it means that this pushing cannot touch any object => useless push
-                #reset the cnt to 0
-                if cnt == len(push_step_mag) - 1:
-                    cnt = 0
+                #reset the cnt to -1
+                if collision_free_counter == len(push_step_mag) - 1:
+                    collision_free_counter = -1
             
             #store how many trajectory points are not in collision with items 
-            p_path_cnt.append(cnt)
+            push_path_collision_free_counter.append(collision_free_counter)
 
         #get the path with max points
-        path_ind = np.random.choice((p_path_cnt == np.max(p_path_cnt)).nonzero()[0])
-        be4_push_point = p_list[path_ind]
-        print(f"be4_push_point: {be4_push_point}")
-        print(f"max path cnt: {np.max(p_path_cnt)}")
+        path_ind = np.random.choice((push_path_collision_free_counter == np.max(push_path_collision_free_counter)).nonzero()[0])
+        be4_push_point = push_start_pt_list[path_ind]
 
-        return item_poses[neighbour_ind][0:3], neighbour_ind, min_d, push_point, be4_push_point
+        print(f"push_path_collision_free_counter: {np.max(push_path_collision_free_counter)}")
+
+        return push_point, be4_push_point
 
     def is_within_bbox(self, points, center, size, Ro2w):
-        #TODO: [item side] use oriented bounding to check collision
-
+        
+        
         Rw2o = np.linalg.inv(Ro2w)
         ps_  = copy.copy(points)
         for p in ps_:
@@ -1189,13 +1183,10 @@ class Env():
         return False
 
 
-    def compute_guidance_grasp_ang(self, item_ind):
-
-        #get all items bounding boxes
-        bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items = self.compute_item_bboxes()
+    def compute_guidance_grasp_ang(self, item_ind, bbox_items):
 
         #extract bounding box corresponding to item index
-        p            = bbox_items[item_ind]
+        p         = bbox_items[item_ind]
 
         #initialise vectors, norms and unit vectors
         vecs      = np.zeros((3,3))
@@ -1244,3 +1235,195 @@ class Env():
             delta_yaw = delta_ori2
 
         return yaw_angle, gripper_tip_ori[2], delta_yaw
+    
+    def grasp_guidance_generation(self, 
+                                  max_move = 0.05, 
+                                  max_ori = np.deg2rad(30), 
+                                  min_distance_threshold = 0.025):
+
+        #initialise move delta
+        delta_move = []
+
+        #step0: start from home position
+        self.return_home()
+
+        #step1: check if all items are picked
+        if self.N_pickable_obj == 0:
+            return delta_move
+
+        #step 2: get cloest item relative to gripper tip
+        sorted_item_ind, sorted_items_pos, gripper_tip_pos, sorted_delta_vecs = self.sort_item_from_nearest_to_farest()
+
+        #step 3: [MOVE] move in a straight line to the top of the object and adjust the yaw orientation
+
+        #get items bounding boxes and related properties 
+        bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items = self.compute_item_bboxes()
+
+        for i in range(len(sorted_item_ind)):
+            
+            if self.item_data_dict['picked'][sorted_item_ind[i]]:
+                continue
+            
+            if self.N_pickable_obj >= 2:
+                neighbour_pos, neighbour_ind, target_corner, neighbour_corner, min_distance = self.get_closest_item_neighbour(sorted_item_ind[i], 
+                                                                                                                              bbox_items,
+                                                                                                                              face_centers_items)
+            else:
+                min_distance = np.inf
+
+            #check if item is graspable
+            if min_distance > min_distance_threshold:
+
+                item_ind        = sorted_item_ind[i]
+                target_item_pos = sorted_items_pos[i]
+                delta           = sorted_delta_vecs[i]
+
+                #offset the delta to ensure the gripper tip is not in collision with the ground
+                delta += np.array([0,0,0.03])
+
+                #get delta yaw
+                item_yaw, gripper_yaw, delta_ori = self.compute_guidance_grasp_ang(item_ind, bbox_items)
+
+                delta_norm  = np.linalg.norm(delta)
+                unit_vector = delta/delta_norm
+                N_step      = np.ceil(delta_norm/max_move).astype(np.int32) + 1
+
+                step_mag    = np.linspace(0, delta_norm, N_step, endpoint = True)
+                step_mag    = step_mag[1:] - step_mag[0:-1]
+
+                N_step_ori   = np.ceil(abs(delta_ori)/max_ori).astype(np.int32) + 1
+                step_mag_ori = np.linspace(0, delta_ori, N_step_ori, endpoint = True)
+                step_mag_ori = step_mag_ori[1:] - step_mag_ori[0:-1]
+
+                for i in range(max(len(step_mag), len(step_mag_ori))):
+                    delta_move.append([unit_vector[0]*step_mag[i] if i < len(step_mag) else 0, 
+                                       unit_vector[1]*step_mag[i] if i < len(step_mag) else 0,
+                                       unit_vector[2]*step_mag[i] if i < len(step_mag) else 0,
+                                       step_mag_ori[i] if i < len(step_mag_ori) else 0,
+                                       MOVE])
+
+                #step 4: [GRASP] open gripper and move vertically down by a constant height
+                delta = np.array(target_item_pos) - np.array(gripper_tip_pos)
+                delta_move.append([0, 0, -0.03, 0, GRASP])
+
+                return delta_move
+        
+        return delta_move
+
+    def push_guidance_generation(self, 
+                                 max_move = 0.05, 
+                                 max_ori  = np.deg2rad(30),
+                                 min_distance_threshold = 0.025):
+
+        #step0: start from home position
+        self.return_home()
+
+        #initialise delta move
+        delta_move = []
+
+        #step1: check if all items are picked
+        #check if # of pickable objects 
+        if self.N_pickable_obj <= 1:
+            return delta_move
+
+        #step2: get cloest item relative to gripper tip
+        sorted_item_ind, sorted_items_pos, gripper_tip_pos, sorted_delta_vecs = self.sort_item_from_nearest_to_farest()
+
+        #step3: [PUSH] if min. neighbor distance < threshold => push, otherwise skip
+
+        #get items bounding boxes and related properties 
+        bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items = self.compute_item_bboxes()
+
+        for i in range(len(sorted_item_ind)):
+            
+            if self.item_data_dict['picked'][sorted_item_ind[i]]:
+                continue
+            
+            target_ind = sorted_item_ind[i]
+            neighbour_pos, neighbour_ind, target_corner, neighbour_corner, min_distance = self.get_closest_item_neighbour(sorted_item_ind[i], 
+                                                                                                                          bbox_items,
+                                                                                                                          face_centers_items)
+
+            push_point, be4_push_point = self.compute_push_path(center_items,
+                                                                size_items, 
+                                                                Ro2w_items,
+                                                                target_ind, 
+                                                                neighbour_ind, 
+                                                                target_corner, 
+                                                                neighbour_corner)
+
+            if min_distance <= min_distance_threshold:
+                item_ind = sorted_item_ind[i]
+
+                print(f'[guidance_generation] target_ind: {target_ind}') 
+                print(f'[guidance_generation] neighbor_ind: {neighbour_ind}') 
+                print(f'[guidance_generation] neighbour_pos: {neighbour_pos}') 
+                print(f'[guidance_generation] min_distance: {min_distance}') 
+                print(f'[guidance_generation] push_point: {push_point}') 
+
+                #move from the home position to just be4 pushing
+                push_delta       = be4_push_point + np.array([0, 0, 0.05]) - np.array(gripper_tip_pos)
+                push_delta_norm  = np.linalg.norm(push_delta)
+
+                #move from just be4 pushing to pushing
+                push_delta2       = push_point - be4_push_point
+                push_delta_norm2  = np.linalg.norm(push_delta2)
+                push_unit_vector2 = push_delta2/push_delta_norm2
+
+                ang1 = np.arctan2(push_unit_vector2[1], push_unit_vector2[0]) - np.deg2rad(90.)
+                if ang1 > np.pi:
+                    ang1 -= 2*np.pi
+                elif ang1 < -np.pi:
+                    ang1 += 2*np.pi
+
+                # ang1 = np.arctan2(push_unit_vector2[1], push_unit_vector2[0])
+
+                print(f'[guidance_generation] axis: {push_unit_vector2}')
+
+                #compute delta move from home position to just be4 pushing
+                _, gripper_tip_ori = self.get_obj_pose(self.gripper_tip_handle, self.sim.handle_world)
+                delta_ori = ang1 - gripper_tip_ori[2]
+
+                N_step_ori   = np.ceil(abs(delta_ori)/max_ori).astype(np.int32) + 1
+                step_mag_ori = np.linspace(0, delta_ori, N_step_ori, endpoint = True)
+                step_mag_ori = step_mag_ori[1:] - step_mag_ori[0:-1]
+
+                push_unit_vector = push_delta/push_delta_norm
+                push_N_step      = np.ceil(push_delta_norm/max_move).astype(np.int32) + 1
+                
+                push_step_mag    = np.linspace(0, push_delta_norm, push_N_step, endpoint = True)
+                push_step_mag    = push_step_mag[1:] - push_step_mag[0:-1]
+
+                for i in range(np.max([len(push_step_mag), len(step_mag_ori)])):
+                    delta_move.append([push_unit_vector[0]*push_step_mag[i] if i < len(push_step_mag) else 0, 
+                                       push_unit_vector[1]*push_step_mag[i] if i < len(push_step_mag) else 0,
+                                       push_unit_vector[2]*push_step_mag[i] if i < len(push_step_mag) else 0,
+                                       step_mag_ori[i] if i < len(step_mag_ori) else 0,
+                                       PUSH])
+                    
+                delta_move.append([0,0,-0.050,0, PUSH])
+
+                #compute delta move from just be4 pushing to pushing
+                push_delta_norm2  = np.linalg.norm(push_delta2)
+                push_N_step2      = np.ceil(push_delta_norm2/max_move).astype(np.int32) + 1
+                
+                push_step_mag2    = np.linspace(0, push_delta_norm2, push_N_step2, endpoint = True)
+                push_step_mag2    = push_step_mag2[1:] - push_step_mag2[0:-1]
+
+                for i in range(len(push_step_mag2)):
+                    delta_move.append([push_unit_vector2[0]*push_step_mag2[i], 
+                                       push_unit_vector2[1]*push_step_mag2[i],
+                                       push_unit_vector2[2]*push_step_mag2[i],
+                                       0,
+                                       PUSH])
+
+                #
+                delta_move.append([push_unit_vector2[0]*max_move, 
+                                   push_unit_vector2[1]*max_move,
+                                   push_unit_vector2[2]*max_move,
+                                   0,
+                                   PUSH])
+
+                return delta_move
+        
+        return delta_move
