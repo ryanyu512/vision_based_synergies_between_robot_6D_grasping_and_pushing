@@ -4,8 +4,8 @@ class BufferReplay():
 
     def __init__(self, 
                  max_memory_size = int(1e6), 
-                 state_size      = 2048, 
-                 N_action        = 6, 
+                 state_size      = 128, 
+                 N_action        = 4, 
                  N_action_type   = 3,
                  alpha           = 0.6):
       
@@ -69,9 +69,12 @@ class BufferReplay():
         priorities = self.priority[:max_ind]
         if priorities.sum() == 0:
             priorities = np.ones_like(priorities)
-        probs = priorities/(priorities.sum() + self.sm_c)
+        probs = priorities/(priorities.sum())
 
-        batch   = np.random.choice(max_ind, batch_size, replace = False, p = probs)
+        batch   = np.random.choice(max_ind, 
+                                   batch_size,
+                                   replace = False, 
+                                   p = probs)
 
         s      = self.s[batch]
         a      = self.a[batch]
@@ -82,8 +85,7 @@ class BufferReplay():
 
         return batch, s, a, a_type, r, ns, done
     
-    def update_buffer(self, sample_ind, predict_q, labeled_q):
+    def update_buffer(self, sample_ind, predict_q):
         
         self.predict_q[sample_ind] = predict_q
-        self.labeled_q[sample_ind] = labeled_q
         self.priority[sample_ind]  = np.abs(self.predict_q[sample_ind] - self.labeled_q[sample_ind] + self.sm_c)**self.alpha
