@@ -28,9 +28,8 @@ GRIPPER_FULL_OPEN  = 1
 GRIPPER_NON_CLOSE_NON_OPEN = 2
 
 #initialise action type
-MOVE  = 0
-GRASP = 1
-PUSH  = 2
+GRASP = 0
+PUSH  = 1
 
 #initialise home pose 
 HOME_POSE = [-0.1112, 
@@ -595,6 +594,8 @@ class Env():
         if self.gripper_status == GRIPPER_FULL_CLOSE:
             #fail to grasp anything
             reward = -1.
+        elif self.gripper_status == GRIPPER_FULL_OPEN:
+            reward =  0.
         elif self.gripper_status == GRIPPER_NON_CLOSE_NON_OPEN:
 
             #update current goal position
@@ -607,10 +608,7 @@ class Env():
                       delta_ori = [0, 0, 0])
 
             #update current object position
-
             self.item_data_dict['c_pose'] = self.update_item_pose()
-
-
 
             for i, obj_handle in enumerate(self.item_data_dict['handle']):
                 
@@ -737,17 +735,20 @@ class Env():
 
     def reward(self, action_type):
 
+        #TODO: update reward
+
         #compute how close between gripper tip and the nearest object
         reward = self.move_reward()
         is_success_grasp = False
         #compute reward
-        if action_type == MOVE:
-            reward += self.move_collision_reward()
 
-        elif action_type == GRASP:
+        #TODO: check if it should be deleted
+        # if action_type == MOVE:
+        #     reward += self.move_collision_reward()
+
+        if action_type == GRASP:
             grasp_reward, is_success_grasp = self.grasp_reward()
             reward += grasp_reward
-
         elif action_type == PUSH:
             reward += self.push_reward()
 
@@ -765,30 +766,21 @@ class Env():
 
         return reward, is_success_grasp
 
-    def step(self, action_type, delta_pos, delta_ori):
-        
+    def step(self, action_type, delta_pos, delta_ori, is_open_gripper):
+        #TODO: change the action type code section
+
         is_success_grasp = False
 
         delta_ori = [0, 0, delta_ori]
-        if action_type == MOVE:
+        if action_type == GRASP:
             self.open_close_gripper(is_open_gripper = True)
             self.move(delta_pos = delta_pos,
                       delta_ori = delta_ori)
-        elif action_type == GRASP:
-            self.open_close_gripper(is_open_gripper = True)
-            self.move(delta_pos = delta_pos,
-                      delta_ori = delta_ori)
-            self.open_close_gripper(is_open_gripper = False)
+            self.open_close_gripper(is_open_gripper = is_open_gripper)
         elif action_type == PUSH:
-
-            print("[STEP] PUSHHHHHHHHHHHHHHHHH!!!!")
             self.open_close_gripper(is_open_gripper = False)
             self.move(delta_pos = delta_pos,
                       delta_ori = delta_ori)
-            # #TODO: it seems necessary
-            # #following MOVE acttion will open gripper and affect the scene object 
-            # self.move(delta_pos = [0,0,0.05],
-            #           delta_ori = [0,0,0])
 
         #get color image and depth image after action    
         ncolor_img, ndepth_img = self.get_rgbd_data() 
@@ -863,6 +855,8 @@ class Env():
         print("[SUCCESS] return home pose")
 
     def compute_item_bboxes(self):
+
+        #TODO: remove useless code
 
         bbox_items          = []
         size_items          = []
@@ -960,32 +954,6 @@ class Env():
             face_plane_items.append(planes)
 
         return bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items
-
-    def get_closest_item_rel2gripper(self):
-
-        #get item poses
-        item_poses = self.update_item_pose()
-
-        #get gripper pose
-        gripper_tip_pos, gripper_tip_ori = self.get_obj_pose(self.gripper_tip_handle, 
-                                                             self.sim.handle_world)
-
-        #get closest item index
-        min_norm     = np.inf
-        min_delta    = None
-
-        for i in range(len(item_poses)):
-            delta_vector      = np.array(item_poses[i][0:3]) - np.array(gripper_tip_pos)
-            delta_vector_norm = np.linalg.norm(delta_vector)
-
-            if min_norm > delta_vector_norm:
-                min_norm   = delta_vector_norm
-                item_ind = i
-                min_delta = delta_vector
-
-        item_pos = item_poses[item_ind][0:3]
-
-        return item_ind, item_pos, gripper_tip_pos, min_delta
     
     def sort_item_from_nearest_to_farest(self):
 
@@ -1201,8 +1169,6 @@ class Env():
             vecs_norm[i] = np.linalg.norm(vecs[i,:])
             unit_vecs[i,:] = vecs[i,:]/vecs_norm[i]
 
-            print(f'unit_vecs{i}: {unit_vecs[i,:]}, norm: {vecs_norm[i]}')
-
         #compute yaw angle orientation
         axis  = None
         max_norm = -np.inf 
@@ -1213,15 +1179,8 @@ class Env():
                 max_norm = vecs_norm[i]
                 axis = unit_vecs[i,:]
 
-        ang1 = np.arctan2(axis[1], axis[0]) - np.deg2rad(90.)
-        if ang1 > np.pi:
-            ang1 -= 2*np.pi
-        elif ang1 < -np.pi:
-            ang1 += 2*np.pi
-
+        ang1 = utils.wrap_ang(np.arctan2(axis[1], axis[0]) - np.deg2rad(90.))
         ang2 = ang1 + np.pi if np.sign(ang1) <= 0 else ang1 - np.pi
-
-        print(f'[guidance_generation] axis: {axis}')
 
         _, gripper_tip_ori = self.get_obj_pose(self.gripper_tip_handle, self.sim.handle_world)
         delta_ori1 = ang1 - gripper_tip_ori[2]
@@ -1238,8 +1197,10 @@ class Env():
     
     def grasp_guidance_generation(self, 
                                   max_move = 0.05, 
-                                  max_ori = np.deg2rad(30), 
+                                  max_ori  = np.deg2rad(30), 
                                   min_distance_threshold = 0.025):
+
+        #TODO: add open close gripper command in the movement
 
         #initialise move delta
         delta_move = []
@@ -1251,7 +1212,7 @@ class Env():
         if self.N_pickable_obj == 0:
             return delta_move
 
-        #step 2: get cloest item relative to gripper tip
+        #step2: get the cloest to the farest item relative to gripper tip
         sorted_item_ind, sorted_items_pos, gripper_tip_pos, sorted_delta_vecs = self.sort_item_from_nearest_to_farest()
 
         #step 3: [MOVE] move in a straight line to the top of the object and adjust the yaw orientation
@@ -1264,6 +1225,7 @@ class Env():
             if self.item_data_dict['picked'][sorted_item_ind[i]]:
                 continue
             
+            #compute min. distance if # of pickable objects >= 2
             if self.N_pickable_obj >= 2:
                 neighbour_pos, neighbour_ind, target_corner, neighbour_corner, min_distance = self.get_closest_item_neighbour(sorted_item_ind[i], 
                                                                                                                               bbox_items,
@@ -1271,40 +1233,39 @@ class Env():
             else:
                 min_distance = np.inf
 
-            #check if item is graspable
+            #check if the target item is graspable
             if min_distance > min_distance_threshold:
 
                 item_ind        = sorted_item_ind[i]
                 target_item_pos = sorted_items_pos[i]
-                delta           = sorted_delta_vecs[i]
 
-                #offset the delta to ensure the gripper tip is not in collision with the ground
-                delta += np.array([0,0,0.03])
+                #compute linear movement
+                delta_lin       = sorted_delta_vecs[i] + np.array([0,0,0.03]) #offset the delta to ensure the gripper tip is not in collision with the ground/target item
+                delta_lin_norm  = np.linalg.norm(delta_lin)
+                lin_unit_vector = delta_lin/delta_lin_norm
+                N_step_lin      = np.ceil(delta_lin_norm/max_move).astype(np.int32) + 1
 
-                #get delta yaw
+                step_mag_lin = np.linspace(0, delta_lin_norm, N_step_lin, endpoint = True)
+                step_mag_lin = step_mag_lin[1:] - step_mag_lin[0:-1]
+
+                #compute angular movement
                 item_yaw, gripper_yaw, delta_ori = self.compute_guidance_grasp_ang(item_ind, bbox_items)
-
-                delta_norm  = np.linalg.norm(delta)
-                unit_vector = delta/delta_norm
-                N_step      = np.ceil(delta_norm/max_move).astype(np.int32) + 1
-
-                step_mag    = np.linspace(0, delta_norm, N_step, endpoint = True)
-                step_mag    = step_mag[1:] - step_mag[0:-1]
-
                 N_step_ori   = np.ceil(abs(delta_ori)/max_ori).astype(np.int32) + 1
                 step_mag_ori = np.linspace(0, delta_ori, N_step_ori, endpoint = True)
                 step_mag_ori = step_mag_ori[1:] - step_mag_ori[0:-1]
 
-                for i in range(max(len(step_mag), len(step_mag_ori))):
-                    delta_move.append([unit_vector[0]*step_mag[i] if i < len(step_mag) else 0, 
-                                       unit_vector[1]*step_mag[i] if i < len(step_mag) else 0,
-                                       unit_vector[2]*step_mag[i] if i < len(step_mag) else 0,
-                                       step_mag_ori[i] if i < len(step_mag_ori) else 0,
-                                       MOVE])
+                for j in range(max(len(step_mag_lin), len(step_mag_ori))):
+                    delta_move.append([lin_unit_vector[0]*step_mag_lin[j] if j < len(step_mag_lin) else 0, 
+                                       lin_unit_vector[1]*step_mag_lin[j] if j < len(step_mag_lin) else 0,
+                                       lin_unit_vector[2]*step_mag_lin[j] if j < len(step_mag_lin) else 0,
+                                       step_mag_ori[j] if j < len(step_mag_ori) else 0,
+                                       1, 0,  #open gripper
+                                       GRASP])
 
-                #step 4: [GRASP] open gripper and move vertically down by a constant height
-                delta = np.array(target_item_pos) - np.array(gripper_tip_pos)
-                delta_move.append([0, 0, -0.03, 0, GRASP])
+                #step4: [GRASP] open gripper and move vertically down by a constant height => close gripper
+                delta_move.append([0, 0, -0.03, 0, 
+                                   0, 1, #close gripper
+                                   GRASP])
 
                 return delta_move
         
@@ -1389,6 +1350,7 @@ class Env():
                                        push_home2start_unit_vec[1]*step_mag_home2start[j] if j < len(step_mag_home2start) else 0,
                                        push_home2start_unit_vec[2]*step_mag_home2start[j] if j < len(step_mag_home2start) else 0,
                                        step_mag_ori[j] if j < len(step_mag_ori) else 0,
+                                       0, 1,
                                        PUSH])
                     
                 delta_move.append([0,0,-max_move, 0, PUSH])
@@ -1404,6 +1366,7 @@ class Env():
                                        push_start2closest_unit_vec[1]*step_mag,
                                        push_start2closest_unit_vec[2]*step_mag,
                                        0,
+                                       0, 1, #close gripper
                                        PUSH])
 
                 #compute delta move from the cloest point between two items to break the structure
@@ -1411,6 +1374,7 @@ class Env():
                                    push_start2closest_unit_vec[1]*max_move,
                                    push_start2closest_unit_vec[2]*max_move,
                                    0,
+                                   0, 1, #close gripper
                                    PUSH])
 
                 return delta_move

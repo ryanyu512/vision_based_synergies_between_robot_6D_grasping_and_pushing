@@ -398,11 +398,11 @@ class Agent():
 
                     #action selection
                     move   = np.array(delta_moves[i])
-                    n_move = np.array(delta_moves[i+1] if i+1 < len(delta_moves) else [0,0,0,0,move[-1]])
+                    n_move = np.array(delta_moves[i+1] if i+1 < len(delta_moves) else [0,0,0,0,move[-3],move[-2],move[-1]])
 
                     #select action
-                    a, a_type    =   np.array(move[0:self.Na]),   np.array(move[self.Na])
-                    na, na_type  = np.array(n_move[0:self.Na]), np.array(n_move[self.Na])
+                    a,   a_type  =   np.array(move[0:self.Na]),   np.array(move[-1])
+                    na, na_type  = np.array(n_move[0:self.Na]), np.array(n_move[-1])
 
                     a_type  = torch.FloatTensor(a_type).unsqueeze(0).to(self.device)
                     a       = torch.FloatTensor(a).unsqueeze(0).to(self.device)
@@ -417,7 +417,8 @@ class Agent():
                     #TODO:test the step function
                     next_color_img, next_depth_img, r, is_success_grasp = self.env.step(a_type.to(torch.device('cpu')).detach().numpy()[0], 
                                                                                         a.to(torch.device('cpu')).detach().numpy()[0][0:3], 
-                                                                                        a.to(torch.device('cpu')).detach().numpy()[0][3])
+                                                                                        a.to(torch.device('cpu')).detach().numpy()[0][3], 
+                                                                                        is_open_gripper = True if move[4] == 1 else False)
 
                     print(f"[STEP]: {step} [ACTION TYPE]: {a_type} [REWARD]: {r}") if is_debug else None
                     print(f"[MOVE]: {a.to(torch.device('cpu')).detach().numpy()[0]}") if is_debug else None
