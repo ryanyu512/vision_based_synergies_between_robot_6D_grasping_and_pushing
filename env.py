@@ -1322,7 +1322,7 @@ class Env():
         delta_move = []
 
         #step1: check if all items are picked
-        #check if # of pickable objects 
+        #check if # of pickable objects <= 1
         if self.N_pickable_obj <= 1:
             return delta_move
 
@@ -1330,20 +1330,22 @@ class Env():
         sorted_item_ind, sorted_items_pos, gripper_tip_pos, sorted_delta_vecs = self.sort_item_from_nearest_to_farest()
 
         #step3: [PUSH] if min. neighbor distance < threshold => push, otherwise skip
-
         #get items bounding boxes and related properties 
         bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items = self.compute_item_bboxes()
 
         for i in range(len(sorted_item_ind)):
             
+            #if picked, pass
             if self.item_data_dict['picked'][sorted_item_ind[i]]:
                 continue
             
-            target_ind = sorted_item_ind[i]
+            #compute the closest neighbour item based on target item
             neighbour_pos, neighbour_ind, target_corner, neighbour_corner, min_distance = self.get_closest_item_neighbour(sorted_item_ind[i], 
                                                                                                                           bbox_items,
                                                                                                                           face_centers_items)
 
+            #compute the closest point between two items and push start point
+            target_ind = sorted_item_ind[i]
             push_point, be4_push_point = self.compute_push_path(center_items,
                                                                 size_items, 
                                                                 Ro2w_items,
@@ -1353,74 +1355,61 @@ class Env():
                                                                 neighbour_corner)
 
             if min_distance <= min_distance_threshold:
-                item_ind = sorted_item_ind[i]
 
-                print(f'[guidance_generation] target_ind: {target_ind}') 
-                print(f'[guidance_generation] neighbor_ind: {neighbour_ind}') 
-                print(f'[guidance_generation] neighbour_pos: {neighbour_pos}') 
-                print(f'[guidance_generation] min_distance: {min_distance}') 
-                print(f'[guidance_generation] push_point: {push_point}') 
+                #move from the home position to the starting point of pushing
+                push_home2start          = be4_push_point + np.array([0, 0, max_move]) - np.array(gripper_tip_pos)
+                push_home2start_norm     = np.linalg.norm(push_home2start)
+                push_home2start_unit_vec = push_home2start/push_home2start_norm
 
-                #move from the home position to just be4 pushing
-                push_delta       = be4_push_point + np.array([0, 0, 0.05]) - np.array(gripper_tip_pos)
-                push_delta_norm  = np.linalg.norm(push_delta)
+                #move from just starting point of pushing to closest point between two items
+                push_start2closest          = push_point - be4_push_point
+                push_start2closest_norm     = np.linalg.norm(push_start2closest)
+                push_start2closest_unit_vec = push_start2closest/push_start2closest_norm
 
-                #move from just be4 pushing to pushing
-                push_delta2       = push_point - be4_push_point
-                push_delta_norm2  = np.linalg.norm(push_delta2)
-                push_unit_vector2 = push_delta2/push_delta_norm2
+                #compute target yaw angle 
+                target_yaw_ang = utils.wrap_ang(np.arctan2(push_start2closest_unit_vec[1], push_start2closest_unit_vec[0]) - np.deg2rad(90.))
 
-                ang1 = np.arctan2(push_unit_vector2[1], push_unit_vector2[0]) - np.deg2rad(90.)
-                if ang1 > np.pi:
-                    ang1 -= 2*np.pi
-                elif ang1 < -np.pi:
-                    ang1 += 2*np.pi
+                #compute delta move from home position to the starting point of pushing
 
-                # ang1 = np.arctan2(push_unit_vector2[1], push_unit_vector2[0])
-
-                print(f'[guidance_generation] axis: {push_unit_vector2}')
-
-                #compute delta move from home position to just be4 pushing
+                #[compute angular movement]
                 _, gripper_tip_ori = self.get_obj_pose(self.gripper_tip_handle, self.sim.handle_world)
-                delta_ori = ang1 - gripper_tip_ori[2]
+                delta_yaw = target_yaw_ang - gripper_tip_ori[2]
 
-                N_step_ori   = np.ceil(abs(delta_ori)/max_ori).astype(np.int32) + 1
-                step_mag_ori = np.linspace(0, delta_ori, N_step_ori, endpoint = True)
+                N_step_ori   = np.ceil(abs(delta_yaw)/max_ori).astype(np.int32) + 1
+                step_mag_ori = np.linspace(0, delta_yaw, N_step_ori, endpoint = True)
                 step_mag_ori = step_mag_ori[1:] - step_mag_ori[0:-1]
 
-                push_unit_vector = push_delta/push_delta_norm
-                push_N_step      = np.ceil(push_delta_norm/max_move).astype(np.int32) + 1
-                
-                push_step_mag    = np.linspace(0, push_delta_norm, push_N_step, endpoint = True)
-                push_step_mag    = push_step_mag[1:] - push_step_mag[0:-1]
-
-                for i in range(np.max([len(push_step_mag), len(step_mag_ori)])):
-                    delta_move.append([push_unit_vector[0]*push_step_mag[i] if i < len(push_step_mag) else 0, 
-                                       push_unit_vector[1]*push_step_mag[i] if i < len(push_step_mag) else 0,
-                                       push_unit_vector[2]*push_step_mag[i] if i < len(push_step_mag) else 0,
-                                       step_mag_ori[i] if i < len(step_mag_ori) else 0,
+                #[compute linear movement]
+                N_step_home2start      = np.ceil(push_home2start_norm/max_move).astype(np.int32) + 1
+                step_mag_home2start    = np.linspace(0, push_home2start_norm, N_step_home2start, endpoint = True)
+                step_mag_home2start    = step_mag_home2start[1:] - step_mag_home2start[0:-1]
+        
+                for j in range(np.max([len(step_mag_home2start), len(step_mag_ori)])):
+                    delta_move.append([push_home2start_unit_vec[0]*step_mag_home2start[j] if j < len(step_mag_home2start) else 0, 
+                                       push_home2start_unit_vec[1]*step_mag_home2start[j] if j < len(step_mag_home2start) else 0,
+                                       push_home2start_unit_vec[2]*step_mag_home2start[j] if j < len(step_mag_home2start) else 0,
+                                       step_mag_ori[j] if j < len(step_mag_ori) else 0,
                                        PUSH])
                     
-                delta_move.append([0,0,-0.050,0, PUSH])
+                delta_move.append([0,0,-max_move, 0, PUSH])
 
-                #compute delta move from just be4 pushing to pushing
-                push_delta_norm2  = np.linalg.norm(push_delta2)
-                push_N_step2      = np.ceil(push_delta_norm2/max_move).astype(np.int32) + 1
+                #compute delta move from pusing starting point to the closest point between two items
+                N_step_start2closest = np.ceil(push_start2closest_norm/max_move).astype(np.int32) + 1
                 
-                push_step_mag2    = np.linspace(0, push_delta_norm2, push_N_step2, endpoint = True)
-                push_step_mag2    = push_step_mag2[1:] - push_step_mag2[0:-1]
+                step_mag_start2closest = np.linspace(0, push_start2closest_norm, N_step_start2closest, endpoint = True)
+                step_mag_start2closest = step_mag_start2closest[1:] - step_mag_start2closest[0:-1]
 
-                for i in range(len(push_step_mag2)):
-                    delta_move.append([push_unit_vector2[0]*push_step_mag2[i], 
-                                       push_unit_vector2[1]*push_step_mag2[i],
-                                       push_unit_vector2[2]*push_step_mag2[i],
+                for step_mag in step_mag_start2closest:
+                    delta_move.append([push_start2closest_unit_vec[0]*step_mag, 
+                                       push_start2closest_unit_vec[1]*step_mag,
+                                       push_start2closest_unit_vec[2]*step_mag,
                                        0,
                                        PUSH])
 
-                #
-                delta_move.append([push_unit_vector2[0]*max_move, 
-                                   push_unit_vector2[1]*max_move,
-                                   push_unit_vector2[2]*max_move,
+                #compute delta move from the cloest point between two items to break the structure
+                delta_move.append([push_start2closest_unit_vec[0]*max_move, 
+                                   push_start2closest_unit_vec[1]*max_move,
+                                   push_start2closest_unit_vec[2]*max_move,
                                    0,
                                    PUSH])
 

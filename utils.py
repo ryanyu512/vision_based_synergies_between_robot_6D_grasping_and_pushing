@@ -3,6 +3,15 @@ import copy
 import numpy as np
 import matplotlib.pyplot as plt
 
+def wrap_ang(ang):
+
+    if ang > np.pi:
+        ang -= 2*np.pi
+    elif ang < -np.pi:
+        ang += 2*np.pi
+
+    return ang
+
 def euler2rotm(theta):
 
     R_x = np.array([[ 1,                     0,                     0 ],
