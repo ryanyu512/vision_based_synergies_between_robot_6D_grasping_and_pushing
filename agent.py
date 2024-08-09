@@ -10,9 +10,8 @@ from buffer import BufferReplay
 from torchvision import transforms
 from network import Encoder, Actor, Critic
 
-MOVE  = 0
-GRASP = 1
-PUSH  = 2
+GRASP = 0
+PUSH  = 1
 
 class Agent():
 
@@ -356,8 +355,7 @@ class Agent():
     def interact_by_guidance(self,
                              is_train = True, 
                              max_episode = 1,
-                             is_debug = True, 
-                             grasp_guidance = True):
+                             is_debug = True):
         
         #start trainiing/evaluation loop
         for episode in range(max_episode) if is_train else 1:
@@ -376,6 +374,9 @@ class Agent():
                 
                 if len(delta_moves) == 0:
                     delta_moves = self.env.push_guidance_generation()
+                    action_type = PUSH
+                else:
+                    action_type = GRASP
 
                 if len(delta_moves) == 0:
                     done     = True
@@ -398,21 +399,21 @@ class Agent():
 
                     #action selection
                     move   = np.array(delta_moves[i])
-                    n_move = np.array(delta_moves[i+1] if i+1 < len(delta_moves) else [0,0,0,0,move[-3],move[-2],move[-1]])
+                    n_move = np.array(delta_moves[i+1] if i+1 < len(delta_moves) else [0,0,0,0,move[-2],move[-1]])
 
                     #select action
-                    a,   a_type  =   np.array(move[0:self.Na]),   np.array(move[-1])
-                    na, na_type  = np.array(n_move[0:self.Na]), np.array(n_move[-1])
+                    a,   a_type  =   np.array(move[0:self.Na]), np.array([action_type])
+                    na, na_type  = np.array(n_move[0:self.Na]), np.array([action_type])
 
-                    a_type  = torch.FloatTensor(a_type).unsqueeze(0).to(self.device)
+                    a_type  = torch.FloatTensor(a_type).to(self.device)
                     a       = torch.FloatTensor(a).unsqueeze(0).to(self.device)
-                    na_type = torch.FloatTensor(na_type).unsqueeze(0).to(self.device)
+                    na_type = torch.FloatTensor(na_type).to(self.device)
                     na      = torch.FloatTensor(na).unsqueeze(0).to(self.device)
 
                     #compute one hot vector
                     a_type_onehot = torch.nn.functional.one_hot(a_type.long(), 
                                                                 num_classes = self.Na_type).float()
-                    
+
                     #step
                     #TODO:test the step function
                     next_color_img, next_depth_img, r, is_success_grasp = self.env.step(a_type.to(torch.device('cpu')).detach().numpy()[0], 

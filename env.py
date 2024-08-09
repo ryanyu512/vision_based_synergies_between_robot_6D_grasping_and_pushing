@@ -225,7 +225,7 @@ class Env():
         self.bg_depth_img = self.bg_depth_img * self.depth_scale
 
     def get_rgbd_data(self):
-        #TODO: may need to flip left right (not sure now)
+        #TODO [FINISH]: may need to flip left right (not sure now)
 
         #get color_img
         
@@ -435,7 +435,6 @@ class Env():
         unit_dir  = move_vector/move_norm
 
         #get move step
-        #TODO: may not work for norm very closed to zero
         delta_step = unit_dir*(move_norm/N_steps) if move_norm != 0. else np.array([0, 0, 0])
 
         return delta_step
@@ -504,7 +503,7 @@ class Env():
                     return 
                 elif new_gripper_joint_position >= gripper_joint_position:
                     grasp_cnt += 1
-                    #TODO: more testing
+                    #TODO: sometimes the waiting time is long after grasping, find the reason
                     if grasp_cnt >= 20:
                         print("[GRASP] grasp something")
                         self.gripper_status = GRIPPER_NON_CLOSE_NON_OPEN
@@ -767,7 +766,7 @@ class Env():
         return reward, is_success_grasp
 
     def step(self, action_type, delta_pos, delta_ori, is_open_gripper):
-        #TODO: change the action type code section
+        #TODO [FINISH]: change the action type code section 
 
         is_success_grasp = False
 
@@ -856,15 +855,12 @@ class Env():
 
     def compute_item_bboxes(self):
 
-        #TODO: remove useless code
+        #TODO [FINISH]: remove useless code
 
         bbox_items          = []
         size_items          = []
         center_items        = []
-        face_pts_items      = []
-        face_normals_items  = []
         face_centers_items  = []
-        face_plane_items    = []
         Ro2w_items          = []
 
         for i, handle in enumerate(self.item_data_dict['handle']):
@@ -918,25 +914,15 @@ class Env():
 
             bbox_items.append(p)
 
-            face_pts_items.append([[p[0,:], p[2,:], p[6,:], p[4,:]],
-                                   [p[1,:], p[3,:], p[7,:], p[5,:]],
-                                   [p[0,:], p[1,:], p[3,:], p[2,:]],
-                                   [p[4,:], p[5,:], p[7,:], p[6,:]],
-                                   [p[0,:], p[1,:], p[5,:], p[4,:]],
-                                   [p[2,:], p[3,:], p[7,:], p[6,:]]])
+            face_pts_items = [[p[0,:], p[2,:], p[6,:], p[4,:]],
+                              [p[1,:], p[3,:], p[7,:], p[5,:]],
+                              [p[0,:], p[1,:], p[3,:], p[2,:]],
+                              [p[4,:], p[5,:], p[7,:], p[6,:]],
+                              [p[0,:], p[1,:], p[5,:], p[4,:]],
+                              [p[2,:], p[3,:], p[7,:], p[6,:]]]
             
-            normals = []
             centers = []
-            planes  = []
-            for face in face_pts_items[i]:
-
-                #compute face normals
-                v1 = np.array(face[0]) - np.array(face[1]) 
-                v2 = np.array(face[2]) - np.array(face[1])
-                n  = np.cross(v1, v2)
-                n /= np.linalg.norm(n)
-
-                normals.append(n)
+            for face in face_pts_items:
 
                 #compute face center
                 center = np.zeros((3,))
@@ -945,15 +931,9 @@ class Env():
                 center /= 4.
                 centers.append(center)
 
-                a,b,c,d = n[0], n[1], n[2], -np.dot(n, center)
-                planes.append([a,b,c,d])
-
-
-            face_normals_items.append(normals)
             face_centers_items.append(centers)
-            face_plane_items.append(planes)
 
-        return bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items
+        return bbox_items, size_items, center_items, face_centers_items, Ro2w_items
     
     def sort_item_from_nearest_to_farest(self):
 
@@ -1198,9 +1178,9 @@ class Env():
     def grasp_guidance_generation(self, 
                                   max_move = 0.05, 
                                   max_ori  = np.deg2rad(30), 
-                                  min_distance_threshold = 0.025):
+                                  min_distance_threshold = 0.02):
 
-        #TODO: add open close gripper command in the movement
+        #TODO [FINISH]: add open close gripper command in the movement
 
         #initialise move delta
         delta_move = []
@@ -1218,7 +1198,7 @@ class Env():
         #step 3: [MOVE] move in a straight line to the top of the object and adjust the yaw orientation
 
         #get items bounding boxes and related properties 
-        bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items = self.compute_item_bboxes()
+        bbox_items, size_items, center_items, face_centers_items, Ro2w_items = self.compute_item_bboxes()
 
         for i in range(len(sorted_item_ind)):
             
@@ -1259,13 +1239,11 @@ class Env():
                                        lin_unit_vector[1]*step_mag_lin[j] if j < len(step_mag_lin) else 0,
                                        lin_unit_vector[2]*step_mag_lin[j] if j < len(step_mag_lin) else 0,
                                        step_mag_ori[j] if j < len(step_mag_ori) else 0,
-                                       1, 0,  #open gripper
-                                       GRASP])
+                                       1, 0]) #open gripper
 
                 #step4: [GRASP] open gripper and move vertically down by a constant height => close gripper
                 delta_move.append([0, 0, -0.03, 0, 
-                                   0, 1, #close gripper
-                                   GRASP])
+                                   0, 1]) #close gripper
 
                 return delta_move
         
@@ -1274,7 +1252,7 @@ class Env():
     def push_guidance_generation(self, 
                                  max_move = 0.05, 
                                  max_ori  = np.deg2rad(30),
-                                 min_distance_threshold = 0.025):
+                                 min_distance_threshold = 0.02):
 
         #step0: start from home position
         self.return_home()
@@ -1292,7 +1270,7 @@ class Env():
 
         #step3: [PUSH] if min. neighbor distance < threshold => push, otherwise skip
         #get items bounding boxes and related properties 
-        bbox_items, size_items, center_items, face_pts_items, face_normals_items, face_centers_items, face_plane_items, Ro2w_items = self.compute_item_bboxes()
+        bbox_items, size_items, center_items, face_centers_items, Ro2w_items = self.compute_item_bboxes()
 
         for i in range(len(sorted_item_ind)):
             
@@ -1316,6 +1294,8 @@ class Env():
                                                                 neighbour_corner)
 
             if min_distance <= min_distance_threshold:
+                
+                print(f"min_distance: {min_distance}")
 
                 #move from the home position to the starting point of pushing
                 push_home2start          = be4_push_point + np.array([0, 0, max_move]) - np.array(gripper_tip_pos)
@@ -1350,10 +1330,9 @@ class Env():
                                        push_home2start_unit_vec[1]*step_mag_home2start[j] if j < len(step_mag_home2start) else 0,
                                        push_home2start_unit_vec[2]*step_mag_home2start[j] if j < len(step_mag_home2start) else 0,
                                        step_mag_ori[j] if j < len(step_mag_ori) else 0,
-                                       0, 1,
-                                       PUSH])
+                                       0, 1])
                     
-                delta_move.append([0,0,-max_move, 0, PUSH])
+                delta_move.append([0,0,-max_move, 0, 0, 1])
 
                 #compute delta move from pusing starting point to the closest point between two items
                 N_step_start2closest = np.ceil(push_start2closest_norm/max_move).astype(np.int32) + 1
@@ -1366,16 +1345,14 @@ class Env():
                                        push_start2closest_unit_vec[1]*step_mag,
                                        push_start2closest_unit_vec[2]*step_mag,
                                        0,
-                                       0, 1, #close gripper
-                                       PUSH])
+                                       0, 1]) #close gripper
 
                 #compute delta move from the cloest point between two items to break the structure
                 delta_move.append([push_start2closest_unit_vec[0]*max_move, 
                                    push_start2closest_unit_vec[1]*max_move,
                                    push_start2closest_unit_vec[2]*max_move,
                                    0,
-                                   0, 1, #close gripper
-                                   PUSH])
+                                   0, 1]) #close gripper
 
                 return delta_move
         
